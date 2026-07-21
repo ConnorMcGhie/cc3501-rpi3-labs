@@ -38,6 +38,7 @@ int main()
     cv::createTrackbar("S max", "Controls", &sMax, 255);
     cv::createTrackbar("V min", "Controls", &vMin, 255);
     cv::createTrackbar("V max", "Controls", &vMax, 255);
+    cv::createTrackbar("Morph size", "Controls", &morphSize, 15);
     
     
     cv::Mat frame, hsv, mask;
@@ -67,24 +68,53 @@ int main()
                 mask.cols, mask.rows, cv::countNonZero(mask));
                     
         // Morphological open then close to clean up the thresholded image
+        // Preferred method compared to close open as want to focus on big obvious foreground objects
+        // which means do not want to dilate initial threshold background noise first which can distort the main object.
         int size = std::max(1, morphSize);
         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
                                                     cv::Size(2 * size + 1, 2 * size + 1));
         cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
         cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
         
-        // Locate the object using image moments -> centre of mass
-        cv::Moments m = cv::moments(mask, true);
-        if (m.m00 > 0) {
+        // Find teh outline of the detected regions
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        
+        // Pick largest contour by area
+        int bestIdx = -1;
+        double bestArea = 0;
+        for (size_t i = 0; i < contours.size(); i++) {
+            double area = cv::contourArea(contours[i]);
+            if (area > bestArea) {
+                bestArea = area;
+                bestIdx = (int)i;
+            }
+        }
+        
+        
+        if (bestIdx >= 0 && bestArea > 0) {
+        
+            cv::Moments m = cv::moments(contours[bestIdx]);
             double cx = m.m10 / m.m00;
             double cy = m.m01 / m.m00;
             
             printf("Object detected at (x=%.1f, y=%.1f), area=%.0f px\n", cx, cy, m.m00);
             
-            // Draw a marker on the camera view at the detected centroid
-            cv::circle(frame, cv::Point((int)cx, (int)cy), 8, cv::Scalar(0, 0, 255), 2);
-            cv::line(frame, cv::Point((int)cx -12, (int)cy), cv::Point((int)cx +12, (int)cy), cv::Scalar(0, 0, 255), 1);
-            cv::line(frame, cv::Point((int)cx, (int)cy -12), cv::Point((int)cx, (int)cy + 12), cv::Scalar(0, 0, 255), 1);
+            // Draw the object's outline on the camera view
+            cv::drawContours(frame, contours, bestIdx, cv::Scalar(255, 255, 255), 1);
+            
+            //Mark the centroid with a +
+            int crossSize = 5;
+            cv::line(frame, cv::Point((int)cx - crossSize, (int)cy), cv::Point((int)cx + crossSize, (int)cy),
+                cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+            cv::line(frame, cv::Point((int)cx, (int)cy  - crossSize), cv::Point((int)cx, (int)cy  + crossSize),
+                cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+                
+            // Label the "+" with its (x, y) coordinates
+            char label[64];
+            snprintf(label, sizeof(label), "(%.0f, %.0f)", cx, cy);
+            cv::putText(frame, label, cv::Point((int)cx + 8, (int)cy -8),
+                cv::FONT_HERSHEY_SIMPLEX, 0.445, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
             
         } else {
             printf("No object detected.\n");
@@ -93,6 +123,7 @@ int main()
         
         //show frame
         cv::imshow("Camera", frame);
+        cv::imshow("Thresholded", mask);
         cv::waitKey(1);
 
         // Measure the frame rate
